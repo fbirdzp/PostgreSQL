@@ -1,0 +1,254 @@
+
+
+# 1 创建初始用户
+
+	
+## 1.1 add os user
+	
+	[root@vm01 ~]# useradd postgres
+	[root@vm01 ~]# passwd postgres
+	
+	注意：这里设置密码是linux用户postgres的登录密码，不是pgsql服务器的密码
+	
+## 1.2 create postgresql data directory
+	
+	[root@vm01 u01]# mkdir -p /u01/pgsql/pgdata
+	[root@vm01 u01]# chown -R postgres /u01/pgsql/
+	
+## 1.3 add env for user postgres
+	
+	export PS1='[\u@\h \W]\$ '
+	export PGPORT=1921  
+	export PGDATA=/u01/pgsql/pgdata  
+	export LANG=en_US.utf8  
+	export PGHOME=/home/postgres/pgsql11  
+	export LD_LIBRARY_PATH=$PGHOME/lib:/lib64:/usr/lib64:/usr/local/lib64:/lib:/usr/lib:/usr/local/lib:$LD_LIBRARY_PATH  
+	export PATH=$PGHOME/bin:$PATH:.  
+	export DATE=`date +"%Y%m%d%H%M"`  
+	export MANPATH=$PGHOME/share/man:$MANPATH  
+	export PGHOST=$PGDATA  
+	export PGUSER=postgres  
+	export PGDATABASE=postgres  
+	alias ll='ls -lh'  
+	set -o vi
+
+
+# 2 系统配置
+	
+## 2.1 安装常用包
+	
+	yum -y install coreutils glib2 lrzsz mpstat dstat sysstat e4fsprogs xfsprogs ntp readline-devel zlib-devel openssl-devel pam-devel libxml2-devel libxslt-devel python-devel tcl-devel gcc make smartmontools flex bison perl-devel perl-ExtUtils* openldap-devel jadetex  openjade bzip2
+
+## 2.2 配置OS内核参数
+	
+	/etc/sysctl.conf追加如下内容:
+	
+	# for postgreSQL
+	kernel.shmall = 4294967296  
+	kernel.shmmax=135497418752  
+	kernel.shmmni = 4096  
+	kernel.sem = 50100 64128000 50100 1280  
+	fs.file-max = 7672460  
+	fs.aio-max-nr = 1048576  
+	net.ipv4.ip_local_port_range = 9000 65000  
+	net.core.rmem_default = 262144  
+	net.core.rmem_max = 4194304  
+	net.core.wmem_default = 262144  
+	net.core.wmem_max = 4194304  
+	net.ipv4.tcp_max_syn_backlog = 4096  
+	net.core.netdev_max_backlog = 10000  
+	net.ipv4.netfilter.ip_conntrack_max = 655360  
+	net.ipv4.tcp_timestamps = 0  
+	net.ipv4.tcp_tw_recycle=1  
+	net.ipv4.tcp_timestamps=1  
+	net.ipv4.tcp_keepalive_time = 72   
+	net.ipv4.tcp_keepalive_probes = 9   
+	net.ipv4.tcp_keepalive_intvl = 7  
+	vm.zone_reclaim_mode=0  
+	vm.dirty_background_bytes = 40960000  
+	vm.dirty_ratio = 80  
+	vm.dirty_expire_centisecs = 6000  
+	vm.dirty_writeback_centisecs = 50  
+	vm.swappiness=0  
+	vm.overcommit_memory = 0  
+	vm.overcommit_ratio = 90  
+
+## 2.3 生效配置
+    sysctl -p
+
+## 2.4 配置OS资源限制
+	文件 /etc/security/limits.conf追加如下内容
+	#nofile超过1048576的话，一定要先将sysctl的fs.nr_open设置为更大的值，并生效后才能继续设置nofile.
+
+	* soft    nofile  131072  
+	* hard    nofile  131072  
+	* soft    nproc   131072  
+	* hard    nproc   131072  
+	* soft    core    unlimited  
+	* hard    core    unlimited  
+	* soft    memlock 500000000  
+	* hard    memlock 500000000
+	
+## 2.5 关闭防火墙
+	iptables -F
+	
+## 2.6 禁用selinux
+	[root@vm01 digoal]# cat /etc/sysconfig/selinux 
+	SELINUX=disabled
+	SELINUXTYPE=targeted 
+	
+## 2.7 关闭不必要的OS服务
+	chkconfig --list|grep on  
+    关闭不必要的,例如 
+    chkconfig iscsi off
+	
+# 3 编译安装PostgreSQL
+
+    [postgres@vm01 postgresql-11.4]$ su - postgres 
+    [postgres@vm01 postgresql-11.4]$ tar jxvf postgresql-11.4.tar.bz2 
+    [postgres@vm01 postgresql-11.4]$ cd postgresql-11.4
+    [postgres@vm01 postgresql-11.4]$ ./configure --prefix=/home/postgres/pgsql11
+    #如果你希望编译所有能编译的东西，包括文档（HTML和手册页）以及附加模块（contrib），这样键入：
+    [postgres@vm01 postgresql-11.4]$ make world -j 8  
+    [postgres@vm01 postgresql-11.4]$ make install-world  
+
+
+# 4 初始化数据库集群
+
+## 4.1 initdb
+	
+	使用pgsql用户来执行initdb命令,如下：
+	
+	[postgres@vm01 pgdata]$ initdb -D /u01/pgsql/pgdata -E UTF8 --locale=C -U postgres 
+	
+	Success. You can now start the database server using:
+	pg_ctl -D /u01/pgsql/pgdata  -l logfile start
+	
+	同时在pgsql的目录可以看到生成的数据目录data以及该目录的相关数据和配置文件：
+	
+##	4.2 配置postgresql.conf
+	追加到文件末尾即可，重复的会以末尾的作为有效值。  
+  
+    $ vi postgresql.conf
+	#Add new parameter
+	listen_addresses = '192.168.22.121'  ## 绑定的主机IP   
+    port = 1921          ## 绑定的主机端口
+    max_connections = 5000
+    unix_socket_directories = '.'
+    tcp_keepalives_idle = 60
+    tcp_keepalives_interval = 10
+    tcp_keepalives_count = 10
+    shared_buffers = 128GB     # 1/4 主机内存
+    maintenance_work_mem = 2GB  # min( 2G, (1/4 主机内存)/autovacuum_max_workers )
+    dynamic_shared_memory_type = posix
+    vacuum_cost_delay = 0
+    bgwriter_delay = 10ms
+    bgwriter_lru_maxpages = 1000
+    bgwriter_lru_multiplier = 10.0
+    bgwriter_flush_after = 0   # IO很好的机器，不需要考虑平滑调度
+    max_worker_processes = 128
+    max_parallel_workers_per_gather = 0       #  如果需要使用并行查询，设置为大于1 ，不建议超过 主机cores-2
+    old_snapshot_threshold = -1
+    backend_flush_after = 0  # IO很好的机器，不需要考虑平滑调度, 否则建议128~256kB
+    wal_level = replica
+    synchronous_commit = off
+    full_page_writes = on   # 支持原子写超过BLOCK_SIZE的块设备，在对齐后可以关闭。或者支持cow的文件系统可以关闭。
+    wal_buffers = 1GB       # min( 2047MB,          shared_buffers/32 ) = 512MB
+    wal_writer_delay = 10ms
+    wal_writer_flush_after = 0  # IO很好的机器，不需要考虑平滑调度, 否则建议128~256kB
+    checkpoint_timeout = 30min  # 不建议频繁做检查点，否则XLOG会产生很多的FULL PAGE WRITE(when   full_page_writes=on)。
+    max_wal_size = 256GB       # 建议是SHARED BUFFER的2倍
+    min_wal_size = 64GB        # max_wal_size/4
+    checkpoint_completion_target = 0.05     # 硬盘好的情况下，可以让检查点快速结束，恢复时也可以快速达到一致状态。否则建议0.5~0.9
+    checkpoint_flush_after = 0                   # IO很好的机器，不需要考虑平滑调度, 否则建议128~256kB
+    archive_mode = on
+    archive_command = '/bin/date'      #  后期再修改，如  'test ! -f /disk1/digoal/arch/%f && cp %p /disk1/digoal/arch/%f'
+    max_wal_senders = 8
+    random_page_cost = 1.3     # IO很好的机器，不需要考虑离散和顺序扫描的成本差异
+    parallel_tuple_cost = 0
+    parallel_setup_cost = 0
+    min_parallel_relation_size = 0
+    effective_cache_size = 300GB  # 看着办，扣掉会话连接RSS，shared buffer, autovacuum worker, 剩下的都是OS可用的CACHE。
+    force_parallel_mode = off
+    log_destination = 'csvlog'
+    logging_collector = on
+    log_truncate_on_rotation = on
+    log_checkpoints = on
+    log_connections = on
+    log_disconnections = on
+    log_error_verbosity = verbose
+    log_timezone = 'PRC'
+    vacuum_defer_cleanup_age = 0
+    hot_standby_feedback = off # 建议关闭，以免备库长事务导致 主库无法回收垃圾而膨胀。
+    max_standby_archive_delay = 300s
+    max_standby_streaming_delay = 300s
+    autovacuum = on
+    log_autovacuum_min_duration = 0
+    autovacuum_max_workers = 16         #CPU核多，并且IO好的情况下，可多点，但是注意16* autovacuum_mem，会消耗较多内存
+    autovacuum_naptime = 45s   #建议不要太高频率，否则会因为vacuum产生较多的XLOG。
+    autovacuum_vacuum_scale_factor = 0.1
+    autovacuum_analyze_scale_factor = 0.1
+    autovacuum_freeze_max_age = 1600000000
+    autovacuum_multixact_freeze_max_age = 1600000000
+    vacuum_freeze_table_age = 1500000000
+    vacuum_multixact_freeze_table_age = 1500000000
+    datestyle = 'iso, mdy'
+    timezone = 'PRC'
+    lc_messages = 'C'
+    lc_monetary = 'C'
+    lc_numeric = 'C'
+    lc_time = 'C'
+    default_text_search_config = 'pg_catalog.english'
+    shared_preload_libraries='pg_stat_statements' #如果你的数据库有非常多小文件（比如有几十万以上的表，还有索引等，并且每张表都会被访问到时），建议FD可以设多一些，避免进程需要打开关闭文件。但是不要大于前面章节系统设置的ulimit -n(open files)
+    max_files_per_process=655360
+	
+## 4.3 配置pg_hba.conf
+	
+    Pg_hba.conf默认追加如下内容：
+	
+    host all all 0.0.0.0/0 md5  
+	
+    避免不必要的访问，开放允许的访问，建议务必使用密码访问。
+	
+    $ vi pg_hba.conf
+    host replication xx 0.0.0.0/0 md5  # 流复制
+    host all postgres 0.0.0.0/0 reject # 拒绝超级用户从网络登录
+    host all all 0.0.0.0/0 md5        # 其他用户登陆
+
+      
+## 4.4 启动数据库实例
+	#postgres用户执行pg_ctl命令 
+    pg_ctl          
+    
+    #指定logfile文件启动数据库实例
+    pg_ctl -D /u01/pgsql/pgdata -l /u01/pgsql/logfile/pg_server.log start
+
+	##检查实例状态
+	 ps -ef|grep postgres   ## 查看一下postgres相关是否存在相关进程
+	 lsof -i:1921           ## 查看1921端口下的活动
+	 tail -f /u01/pgsql/logfile/pg_server.log  	## 查看日志里启动信息
+	 psql -l           	## 查看数据库信息 
+	
+  ##初始化数据库postgres用户密码
+
+   接下来要做的第一件事就是设置postgres用户的密码（默认为空），用psql连接成功后直接输入\password即会提示输入两次密码	
+	[pgsql@cs1 ~]$ psql postgres
+    psql (9.6.6)
+    Type "help" for help.
+        postgres=# \password
+    Enter new password: 
+    Enter it again: 
+    postgres=# \l
+                                   List of databases
+       Name    | Owner | Encoding |   Collate    |    Ctype     | Access privileges 
+    -----------+-------+----------+--------------+--------------+-------------------
+     postgres  | pgsql | EUC_CN   | zh_CN.gb2312 | zh_CN.gb2312 | 
+     template0 | pgsql | EUC_CN   | zh_CN.gb2312 | zh_CN.gb2312 | =c/pgsql         +
+               |       |          |              |              | pgsql=CTc/pgsql
+     template1 | pgsql | EUC_CN   | zh_CN.gb2312 | zh_CN.gb2312 | =c/pgsql         +
+               |       |          |              |              | pgsql=CTc/pgsql
+    (3 rows)
+	
+	备注：如果不初始化postgres密码，使用pgadmin“create a new server”时，会报账户信息错误
+	
+	
